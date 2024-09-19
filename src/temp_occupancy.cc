@@ -1,6 +1,6 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
-#include <sensor_msgs/msg/laser_scan.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <open3d/Open3D.h>
 #include <opencv2/opencv.hpp>
@@ -17,8 +17,8 @@ public:
             std::bind(&DepthImageProcessor::depthCallback, this, std::placeholders::_1)
         );
 
-        // Setup ROS 2 publisher for the LaserScan message
-        scan_pub_ = this->create_publisher<sensor_msgs::msg::LaserScan>("scan", 10);
+        // Create publisher for the OccupancyGrid message
+        occupancy_grid_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/occupancy_grid", 10);
 
         vis.CreateVisualizerWindow("Open3D", 640, 480);
     }
@@ -121,11 +121,11 @@ public:
             vis.PollEvents();
             vis.UpdateRender();
 
-            // Perform clustering
+            // Perform clustering and create occupancy grid
             cv::Mat occupancy_grid = cv::Mat::zeros(500, 400, CV_8UC1);
             for (const auto& point : filtered_outlier_points) {
                 int x = static_cast<int>((2 + point(0)) * 100);
-                int z = static_cast<int>(-point(2) * 100);
+                int z = static_cast<int>(500 + point(2) * 100);
                 if (z >= 0 && z < 500 && x >= 0 && x < 400) {
                     occupancy_grid.at<uint8_t>(z, x) = 1;
                 }
@@ -142,52 +142,45 @@ public:
                 }
             }
 
-            cv::Mat displayGrid;
-            cells.convertTo(displayGrid, CV_8UC1, 255);
+            // Rotate the cells matrix by 90 degrees to the left (counterclockwise)
+            cv::transpose(cells, cells);
+            cv::flip(cells, cells, 1);  // Flip the transposed matrix vertically
 
-            cv::imshow("DBSCAN Clusters", displayGrid);
+            // Flip the resulting matrix along the X-axis
+            cv::flip(cells, cells, 0);  // Flip horizontally to mirror in the X-axis
+
+            // Convert cells to an occupancy grid for ROS
+            nav_msgs::msg::OccupancyGrid occupancy_grid_msg;
+            occupancy_grid_msg.header.stamp = this->now();
+            occupancy_grid_msg.header.frame_id = "camera_link";
+            occupancy_grid_msg.info.resolution = 0.01;  // Each grid cell is 5 cm
+            occupancy_grid_msg.info.width = cells.cols;
+            occupancy_grid_msg.info.height = cells.rows;
+            occupancy_grid_msg.info.origin.position.x = 0.0;
+            occupancy_grid_msg.info.origin.position.y = -2.0;
+            occupancy_grid_msg.info.origin.position.z = 0.0;
+            occupancy_grid_msg.info.origin.orientation.w = 1.0;
+
+            // Fill the data into the occupancy grid message
+            occupancy_grid_msg.data.resize(cells.rows * cells.cols);
+            for (int i = 0; i < cells.rows; ++i) {
+                for (int j = 0; j < cells.cols; ++j) {
+                    occupancy_grid_msg.data[i * cells.cols + j] = (cells.at<uint8_t>(i, j) == 1) ? 100 : 0;
+                }
+            }
+
+
+            // Publish the OccupancyGrid message
+            occupancy_grid_pub_->publish(occupancy_grid_msg);
+
+            // // Display the occupancy grid for debugging
+            // cv::Mat displayGrid;
+            // cells.convertTo(displayGrid, CV_8UC1, 255);
+            // cv::imshow("Occupancy Grid", displayGrid);
             if (cv::waitKey(1) == 27) return;  // Exit on ESC key
-
-            // Convert the grid data to a LaserScan message and publish it
-            publishLaserScanFromGrid(cells);
-
         } catch (cv_bridge::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
         }
-    }
-
-    void publishLaserScanFromGrid(const cv::Mat& grid) {
-        // Create a new LaserScan message
-        sensor_msgs::msg::LaserScan scan_msg;
-        scan_msg.header.stamp = this->now();
-        scan_msg.header.frame_id = "odom";
-
-        // Define the LaserScan parameters
-        scan_msg.angle_min = -M_PI / 2;  // Start angle (e.g., -90 degrees)
-        scan_msg.angle_max = M_PI / 2;   // End angle (e.g., +90 degrees)
-        scan_msg.angle_increment = M_PI / grid.cols;  // Adjust increment based on grid size
-        scan_msg.time_increment = 0.0;   // Time between measurements
-        scan_msg.range_min = 0.0;        // Minimum range
-        scan_msg.range_max = 5.0;        // Maximum range (e.g., 5 meters)
-
-        // Reserve space for the ranges
-        scan_msg.ranges.resize(grid.cols, scan_msg.range_max);
-
-        // Populate the LaserScan ranges from the 2D grid
-        for (int col = 0; col < grid.cols; ++col) {
-            int flipped_col = grid.cols - 1 - col;  // Flip the x-axis
-
-            for (int row = 0; row < grid.rows; ++row) {
-                if (grid.at<uint8_t>(row, flipped_col) == 1) {
-                    double distance = static_cast<double>(row) / 100.0;  // Convert grid row to distance in meters
-                    scan_msg.ranges[col] = distance;
-                    break;  // Use the nearest point for each angle
-                }
-            }
-        }
-
-        // Publish the LaserScan message
-        scan_pub_->publish(scan_msg);
     }
 
     void stop() {
@@ -196,7 +189,7 @@ public:
 
 private:
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
-    rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_pub_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr occupancy_grid_pub_;
     open3d::visualization::Visualizer vis;
 };
 

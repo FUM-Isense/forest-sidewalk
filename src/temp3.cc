@@ -1,24 +1,31 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
-#include <sensor_msgs/msg/laser_scan.hpp>
+#include <nav_msgs/msg/odometry.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <open3d/Open3D.h>
 #include <opencv2/opencv.hpp>
+#include <Eigen/Dense>
 #include <iostream>
 #include <vector>
-#include <Eigen/Dense>
 
 class DepthImageProcessor : public rclcpp::Node {
 public:
-    DepthImageProcessor() : Node("depth_image_processor") {
+    DepthImageProcessor() : Node("depth_image_processor"), global_map(1000, 1000, CV_8UC1, cv::Scalar(0)) {
         // Setup ROS 2 subscription for the depth image
         depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
             "/camera/camera/depth/image_rect_raw", 10,
             std::bind(&DepthImageProcessor::depthCallback, this, std::placeholders::_1)
         );
 
-        // Setup ROS 2 publisher for the LaserScan message
-        scan_pub_ = this->create_publisher<sensor_msgs::msg::LaserScan>("scan", 10);
+        // Setup ROS 2 subscription for the odometry data
+        odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+            "/odom", 10,
+            std::bind(&DepthImageProcessor::odomCallback, this, std::placeholders::_1)
+        );
+
+        // Create publisher for the global OccupancyGrid message
+        occupancy_grid_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/occupancy_grid", 10);
 
         vis.CreateVisualizerWindow("Open3D", 640, 480);
     }
@@ -121,11 +128,11 @@ public:
             vis.PollEvents();
             vis.UpdateRender();
 
-            // Perform clustering
+            // Perform clustering and create occupancy grid
             cv::Mat occupancy_grid = cv::Mat::zeros(500, 400, CV_8UC1);
             for (const auto& point : filtered_outlier_points) {
                 int x = static_cast<int>((2 + point(0)) * 100);
-                int z = static_cast<int>(-point(2) * 100);
+                int z = static_cast<int>(500 + point(2) * 100);
                 if (z >= 0 && z < 500 && x >= 0 && x < 400) {
                     occupancy_grid.at<uint8_t>(z, x) = 1;
                 }
@@ -141,53 +148,80 @@ public:
                     }
                 }
             }
+            
+            // Rotate the cells matrix by 90 degrees to the left (counterclockwise)
+            cv::transpose(cells, cells);
+            cv::flip(cells, cells, 1);  // Flip the transposed matrix vertically
 
-            cv::Mat displayGrid;
-            cells.convertTo(displayGrid, CV_8UC1, 255);
+            // Flip the resulting matrix along the X-axis
+            cv::flip(cells, cells, 0);  // Flip horizontally to mirror in the X-axis
+            
+            // Now use odometry data to transform and merge into global grid
+            updateGlobalMap(cells);
 
-            cv::imshow("DBSCAN Clusters", displayGrid);
-            if (cv::waitKey(1) == 27) return;  // Exit on ESC key
-
-            // Convert the grid data to a LaserScan message and publish it
-            publishLaserScanFromGrid(cells);
+            // Publish the global occupancy grid
+            publishGlobalOccupancyGrid();
 
         } catch (cv_bridge::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
         }
     }
 
-    void publishLaserScanFromGrid(const cv::Mat& grid) {
-        // Create a new LaserScan message
-        sensor_msgs::msg::LaserScan scan_msg;
-        scan_msg.header.stamp = this->now();
-        scan_msg.header.frame_id = "odom";
+    void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
+        // Get the odometry data (position and orientation)
+        current_odom_x = msg->pose.pose.position.x;
+        current_odom_y = msg->pose.pose.position.y;
+        current_odom_theta = msg->pose.pose.orientation.z; 
+    }
 
-        // Define the LaserScan parameters
-        scan_msg.angle_min = -M_PI / 2;  // Start angle (e.g., -90 degrees)
-        scan_msg.angle_max = M_PI / 2;   // End angle (e.g., +90 degrees)
-        scan_msg.angle_increment = M_PI / grid.cols;  // Adjust increment based on grid size
-        scan_msg.time_increment = 0.0;   // Time between measurements
-        scan_msg.range_min = 0.0;        // Minimum range
-        scan_msg.range_max = 5.0;        // Maximum range (e.g., 5 meters)
+    void updateGlobalMap(const cv::Mat& local_grid) {
+        // Translate the local grid based on the current odometry
+        cv::Mat transform = cv::getRotationMatrix2D(cv::Point2f(local_grid.cols / 2, local_grid.rows / 2), 
+                                                    current_odom_theta * 180.0 / M_PI, 1.0);
+        
+        // Add translation based on odometry
+        transform.at<double>(0, 2) += (current_odom_x * 100);  // Convert meters to grid cells
+        transform.at<double>(1, 2) += (current_odom_y * 100 + 300);
 
-        // Reserve space for the ranges
-        scan_msg.ranges.resize(grid.cols, scan_msg.range_max);
+        // Create a temporary global grid to hold the transformed local grid
+        cv::Mat transformed_local_grid;
+        // cv::warpAffine(local_grid, transformed_local_grid, transform, global_map.size(), cv::INTER_NEAREST, cv::BORDER_TRANSPARENT);
+        cv::warpAffine(local_grid, transformed_local_grid, transform, global_map.size(), cv::INTER_NEAREST, cv::BORDER_CONSTANT, cv::Scalar(0));
 
-        // Populate the LaserScan ranges from the 2D grid
-        for (int col = 0; col < grid.cols; ++col) {
-            int flipped_col = grid.cols - 1 - col;  // Flip the x-axis
-
-            for (int row = 0; row < grid.rows; ++row) {
-                if (grid.at<uint8_t>(row, flipped_col) == 1) {
-                    double distance = static_cast<double>(row) / 100.0;  // Convert grid row to distance in meters
-                    scan_msg.ranges[col] = distance;
-                    break;  // Use the nearest point for each angle
+        // Merge the transformed local grid into the global map
+        for (int i = 0; i < transformed_local_grid.rows; ++i) {
+            for (int j = 0; j < transformed_local_grid.cols; ++j) {
+                // Only update cells where the local grid has new information (e.g., obstacles or free space)
+                if (transformed_local_grid.at<uint8_t>(i, j) == 1) {
+                    global_map.at<uint8_t>(i, j) = 1;  // Mark as occupied
                 }
             }
         }
+    }
 
-        // Publish the LaserScan message
-        scan_pub_->publish(scan_msg);
+    void publishGlobalOccupancyGrid() {
+        // Prepare the OccupancyGrid message
+        nav_msgs::msg::OccupancyGrid occupancy_grid_msg;
+        occupancy_grid_msg.header.stamp = this->now();
+        occupancy_grid_msg.header.frame_id = "odom";
+        occupancy_grid_msg.info.resolution = 0.01;  // Grid cell resolution in meters
+        occupancy_grid_msg.info.width = global_map.cols;
+        occupancy_grid_msg.info.height = global_map.rows;
+        occupancy_grid_msg.info.origin.position.x = 0.0;
+        occupancy_grid_msg.info.origin.position.y = -5.0;
+        occupancy_grid_msg.info.origin.position.z = 0.0;
+        occupancy_grid_msg.info.origin.orientation.w = 1.0;
+
+        // Fill the data into the occupancy grid message
+        occupancy_grid_msg.data.resize(global_map.rows * global_map.cols);
+        for (int i = 0; i < global_map.rows; ++i) {
+            for (int j = 0; j < global_map.cols; ++j) {
+                occupancy_grid_msg.data[i * global_map.cols + j] = (global_map.at<uint8_t>(i, j) == 1) ? 100 : 0;
+            }
+        }
+
+        // Publish the OccupancyGrid message
+        occupancy_grid_pub_->publish(occupancy_grid_msg);
     }
 
     void stop() {
@@ -196,8 +230,17 @@ public:
 
 private:
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
-    rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_pub_;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
+    rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr occupancy_grid_pub_;
     open3d::visualization::Visualizer vis;
+
+    // Variables to store odometry data
+    double current_odom_x = 0.0;
+    double current_odom_y = 0.0;
+    double current_odom_theta = 0.0;
+
+    // Global occupancy grid
+    cv::Mat global_map;
 };
 
 int main(int argc, char** argv) {

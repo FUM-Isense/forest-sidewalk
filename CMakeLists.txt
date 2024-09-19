@@ -36,9 +36,11 @@ install(
 # Add the executable
 add_executable(cybathlon src/cybathlon.cc)
 add_executable(temp src/temp.cc)
+add_executable(occupancy src/temp3.cc)
 
 ament_target_dependencies(cybathlon rclcpp Eigen3 OpenCV Open3D cv_bridge nav_msgs)
 ament_target_dependencies(temp rclcpp Eigen3 OpenCV Open3D cv_bridge nav_msgs)
+ament_target_dependencies(occupancy rclcpp Eigen3 OpenCV Open3D cv_bridge nav_msgs)
 # # Link libraries
 # target_include_directories(cybathlon PRIVATE
 #   ${EIGEN3_INCLUDE_DIR}
@@ -51,7 +53,7 @@ ament_target_dependencies(temp rclcpp Eigen3 OpenCV Open3D cv_bridge nav_msgs)
 #   ${Open3D_LIBRARIES}
 # )
 
-install(TARGETS cybathlon temp
+install(TARGETS cybathlon temp occupancy
   DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)

@@ -1,26 +1,47 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <nav_msgs/msg/odometry.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <open3d/Open3D.h>
 #include <opencv2/opencv.hpp>
+#include <Eigen/Dense>
 #include <iostream>
 #include <vector>
-#include <Eigen/Dense>
 
 class DepthImageProcessor : public rclcpp::Node {
 public:
-    DepthImageProcessor() : Node("depth_image_processor") {
+    DepthImageProcessor() : Node("depth_image_processor"), global_map(1000, 1000, CV_8UC1, cv::Scalar(0)) {
         // Setup ROS 2 subscription for the depth image
         depth_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
             "/camera/camera/depth/image_rect_raw", 10,
             std::bind(&DepthImageProcessor::depthCallback, this, std::placeholders::_1)
         );
 
-        // Create publisher for the OccupancyGrid message
+        // Setup ROS 2 subscription for the odometry data
+        odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
+            "/odom", 10,
+            std::bind(&DepthImageProcessor::odomCallback, this, std::placeholders::_1)
+        );
+
+        // Create publisher for the global OccupancyGrid message
         occupancy_grid_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/occupancy_grid", 10);
 
         vis.CreateVisualizerWindow("Open3D", 640, 480);
+
+        // Initializing the confidence matrix
+        for (int i = 0; i < 100; i++) {
+            for (int j = 0; j < 100; j++) {
+                confidence_matrix[i][j] = 0;  // Initialize the array with zeros
+            }
+        }
+
+        // Initializing the last confidence matrix
+        for (int i = 0; i < 100; i++) {
+            for (int j = 0; j < 100; j++) {
+                last_confidence[i][j] = 0;  // Initialize the array with zeros
+            }
+        }
     }
 
     void depthCallback(const sensor_msgs::msg::Image::SharedPtr msg) {
@@ -141,47 +162,140 @@ public:
                     }
                 }
             }
-
+            
             // Rotate the cells matrix by 90 degrees to the left (counterclockwise)
             cv::transpose(cells, cells);
             cv::flip(cells, cells, 1);  // Flip the transposed matrix vertically
 
             // Flip the resulting matrix along the X-axis
             cv::flip(cells, cells, 0);  // Flip horizontally to mirror in the X-axis
+            RCLCPP_INFO(this->get_logger(), "0");
+            
+            // Now use odometry data to transform and merge into global grid
+            updateGlobalMap(cells);
 
-            // Convert cells to an occupancy grid for ROS
-            nav_msgs::msg::OccupancyGrid occupancy_grid_msg;
-            occupancy_grid_msg.header.stamp = this->now();
-            occupancy_grid_msg.header.frame_id = "camera_link";
-            occupancy_grid_msg.info.resolution = 0.01;  // Each grid cell is 5 cm
-            occupancy_grid_msg.info.width = cells.cols;
-            occupancy_grid_msg.info.height = cells.rows;
-            occupancy_grid_msg.info.origin.position.x = 0.0;
-            occupancy_grid_msg.info.origin.position.y = -2.0;
-            occupancy_grid_msg.info.origin.position.z = 0.0;
-            occupancy_grid_msg.info.origin.orientation.w = 1.0;
+            RCLCPP_INFO(this->get_logger(), "7");
 
-            // Fill the data into the occupancy grid message
-            occupancy_grid_msg.data.resize(cells.rows * cells.cols);
-            for (int i = 0; i < cells.rows; ++i) {
-                for (int j = 0; j < cells.cols; ++j) {
-                    occupancy_grid_msg.data[i * cells.cols + j] = (cells.at<uint8_t>(i, j) == 1) ? 100 : 0;
-                }
-            }
+            // Publish the global occupancy grid
+            publishGlobalOccupancyGrid();
 
+            RCLCPP_INFO(this->get_logger(), "8");
 
-            // Publish the OccupancyGrid message
-            occupancy_grid_pub_->publish(occupancy_grid_msg);
-
-            // // Display the occupancy grid for debugging
-            // cv::Mat displayGrid;
-            // cells.convertTo(displayGrid, CV_8UC1, 255);
-            // cv::imshow("Occupancy Grid", displayGrid);
-            if (cv::waitKey(1) == 27) return;  // Exit on ESC key
         } catch (cv_bridge::Exception& e) {
             RCLCPP_ERROR(this->get_logger(), "cv_bridge exception: %s", e.what());
         }
     }
+
+    void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
+        // Get the odometry data (position and orientation)
+        current_odom_x = msg->pose.pose.position.x;
+        current_odom_y = msg->pose.pose.position.y;
+        current_odom_theta = msg->pose.pose.orientation.z; 
+    }
+
+    void updateGlobalMap(const cv::Mat& local_grid) {
+        // Translate the local grid based on the current odometry
+        cv::Mat transform = cv::getRotationMatrix2D(cv::Point2f(local_grid.cols / 2, local_grid.rows / 2), 
+                                                    current_odom_theta * 180.0 / M_PI, 1.0);
+        
+        // Add translation based on odometry
+        transform.at<double>(0, 2) += (current_odom_x * 100);  // Convert meters to grid cells
+        transform.at<double>(1, 2) += (current_odom_y * 100 + 300);
+
+        // Create a temporary global grid to hold the transformed local grid
+        cv::Mat transformed_local_grid;
+        // cv::warpAffine(local_grid, transformed_local_grid, transform, global_map.size(), cv::INTER_NEAREST, cv::BORDER_TRANSPARENT);
+        cv::warpAffine(local_grid, transformed_local_grid, transform, global_map.size(), cv::INTER_NEAREST, cv::BORDER_CONSTANT, cv::Scalar(0));
+
+        // // Merge the transformed local grid into the global map
+        // for (int i = 0; i < transformed_local_grid.rows; ++i) {
+        //     for (int j = 0; j < transformed_local_grid.cols; ++j) {
+        //         // Only update cells where the local grid has new information (e.g., obstacles or free space)
+        //         if (transformed_local_grid.at<uint8_t>(i, j) == 1) {
+        //             global_map.at<uint8_t>(i, j) = 1;  // Mark as occupied
+        //         }
+        //     }
+        // }
+        RCLCPP_INFO(this->get_logger(), "1");
+        
+        for (int i = 0; i < 100; i++) {
+            for (int j = 0; j < 100; j++) {
+                if (last_confidence[i][j] == 1) { // Comparing 1
+                    if (confidence_matrix[i][j] > 10) { // Confidental point
+                        continue;
+                    }
+                    else if (confidence_matrix[i][j] == 10) { // New point
+                        insertPoint(i*10, j*10);
+                        confidence_matrix[i][j]++;
+                    }
+                    else if (confidence_matrix[i][j] >= 0) { // Possible Point
+                        confidence_matrix[i][j]++;
+                    }
+                    // RCLCPP_INFO(this->get_logger(), "2");
+                }
+                else if (last_confidence[i][j] == 0) { // Comparing 0s
+                    if (confidence_matrix[i][j] >= 10) { // Confidental point
+                        continue;
+                    }
+                    else if (confidence_matrix[i][j] >= 0) { // Noise Point
+                        confidence_matrix[i][j]= 0;
+                    }
+                // RCLCPP_INFO(this->get_logger(), "3");
+                }
+            }
+        }
+
+        RCLCPP_INFO(this->get_logger(), "4");
+        // Update the last confidence matrix
+        for (int i = 0; i < transformed_local_grid.rows; i += 10) {
+            for (int j = 0; j < transformed_local_grid.cols; j += 10) {
+                if (transformed_local_grid.at<uint8_t>(i, j) == 1) {
+                    last_confidence[i][j] = 1;
+                }
+                else {
+                    last_confidence[i][j] = 0;
+                }
+            }
+        }
+        RCLCPP_INFO(this->get_logger(), "5");
+
+    }
+
+    void insertPoint(int row, int col){
+        for (int i = row; i < row+10; i++) {
+            for (int j = col; j < col+10; j++) {
+                global_map.at<uint8_t>(i, j) = 1;
+            }
+        }
+        RCLCPP_INFO(this->get_logger(), "6");
+    }
+
+    void publishGlobalOccupancyGrid() {
+        // Prepare the OccupancyGrid message
+        nav_msgs::msg::OccupancyGrid occupancy_grid_msg;
+        occupancy_grid_msg.header.stamp = this->now();
+        occupancy_grid_msg.header.frame_id = "odom";
+        occupancy_grid_msg.info.resolution = 0.01;  // Grid cell resolution in meters
+        occupancy_grid_msg.info.width = global_map.cols;
+        occupancy_grid_msg.info.height = global_map.rows;
+        occupancy_grid_msg.info.origin.position.x = 0.0;
+        occupancy_grid_msg.info.origin.position.y = -5.0;
+        occupancy_grid_msg.info.origin.position.z = 0.0;
+        occupancy_grid_msg.info.origin.orientation.w = 1.0;
+
+        // Fill the data into the occupancy grid message
+        occupancy_grid_msg.data.resize(global_map.rows * global_map.cols);
+        for (int i = 0; i < global_map.rows; ++i) {
+            for (int j = 0; j < global_map.cols; ++j) {
+                occupancy_grid_msg.data[i * global_map.cols + j] = (global_map.at<uint8_t>(i, j) == 1) ? 100 : 0;
+            }
+        }
+
+        // Publish the OccupancyGrid message
+        occupancy_grid_pub_->publish(occupancy_grid_msg);
+    }
+
+
 
     void stop() {
         vis.DestroyVisualizerWindow();
@@ -189,8 +303,23 @@ public:
 
 private:
     rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr depth_sub_;
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
     rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr occupancy_grid_pub_;
     open3d::visualization::Visualizer vis;
+
+    // Variables to store odometry data
+    double current_odom_x = 0.0;
+    double current_odom_y = 0.0;
+    double current_odom_theta = 0.0;
+
+    // Global occupancy grid
+    cv::Mat global_map;
+
+    // Convidence matrix
+    int confidence_matrix[100][100];
+
+    // Last confidence matrix
+    int last_confidence[100][100];
 };
 
 int main(int argc, char** argv) {

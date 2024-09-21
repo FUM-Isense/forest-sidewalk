@@ -28,6 +28,20 @@ public:
         occupancy_grid_pub_ = this->create_publisher<nav_msgs::msg::OccupancyGrid>("/occupancy_grid", 10);
 
         vis.CreateVisualizerWindow("Open3D", 640, 480);
+
+        // Initializing the confidence matrix
+        for (int i = 0; i < 100; i++) {
+            for (int j = 0; j < 100; j++) {
+                confidence_matrix[i][j] = 0;  // Initialize the array with zeros
+            }
+        }
+
+        // Initializing the last confidence matrix
+        for (int i = 0; i < 100; i++) {
+            for (int j = 0; j < 100; j++) {
+                last_confidence[i][j] = 0;  // Initialize the array with zeros
+            }
+        }
     }
 
     void depthCallback(const sensor_msgs::msg::Image::SharedPtr msg) {
@@ -46,7 +60,10 @@ public:
             memcpy(depth_image_o3d->data_.data(), depth_image.data, depth_image.total() * depth_image.elemSize());
 
             // Convert depth image to point cloud
-            open3d::camera::PinholeCameraIntrinsic intrinsics(640, 480, 380.570, 380.570, 321.218, 237.158);
+            // open3d::camera::PinholeCameraIntrinsic intrinsics(640, 480, 380.570, 380.570, 321.218, 237.158); // D435i
+            // open3d::camera::PinholeCameraIntrinsic intrinsics(640, 480, 389.861, 389.861, 318.562, 239.314); // D456
+            open3d::camera::PinholeCameraIntrinsic intrinsics(1280, 720, 649.768, 649.768, 637.603, 358.857); // D456 HD
+
             auto pcd = open3d::geometry::PointCloud::CreateFromDepthImage(*depth_image_o3d, intrinsics);
 
             Eigen::Matrix4d flip_transform = Eigen::Matrix4d::Identity();
@@ -188,13 +205,61 @@ public:
         // cv::warpAffine(local_grid, transformed_local_grid, transform, global_map.size(), cv::INTER_NEAREST, cv::BORDER_TRANSPARENT);
         cv::warpAffine(local_grid, transformed_local_grid, transform, global_map.size(), cv::INTER_NEAREST, cv::BORDER_CONSTANT, cv::Scalar(0));
 
-        // Merge the transformed local grid into the global map
-        for (int i = 0; i < transformed_local_grid.rows; ++i) {
-            for (int j = 0; j < transformed_local_grid.cols; ++j) {
-                // Only update cells where the local grid has new information (e.g., obstacles or free space)
-                if (transformed_local_grid.at<uint8_t>(i, j) == 1) {
-                    global_map.at<uint8_t>(i, j) = 1;  // Mark as occupied
+        // // Merge the transformed local grid into the global map
+        // for (int i = 0; i < transformed_local_grid.rows; ++i) {
+        //     for (int j = 0; j < transformed_local_grid.cols; ++j) {
+        //         // Only update cells where the local grid has new information (e.g., obstacles or free space)
+        //         if (transformed_local_grid.at<uint8_t>(i, j) == 1) {
+        //             global_map.at<uint8_t>(i, j) = 1;  // Mark as occupied
+        //         }
+        //     }
+        // }
+        
+        for (int i = 0; i < 100; i++) {
+            for (int j = 0; j < 100; j++) {
+                if (last_confidence[i][j] == 1) { // Comparing 1
+                    if (confidence_matrix[i][j] > 10) { // Confidental point
+                        continue;
+                    }
+                    else if (confidence_matrix[i][j] == 10) { // New point
+                        insertPoint(i*10, j*10);
+                        confidence_matrix[i][j]++;
+                    }
+                    else if (confidence_matrix[i][j] >= 0) { // Possible Point
+                        confidence_matrix[i][j]++;
+                    }
+                    // RCLCPP_INFO(this->get_logger(), "2");
                 }
+                else if (last_confidence[i][j] == 0) { // Comparing 0s
+                    if (confidence_matrix[i][j] >= 10) { // Confidental point
+                        continue;
+                    }
+                    else if (confidence_matrix[i][j] >= 0) { // Noise Point
+                        confidence_matrix[i][j]= 0;
+                    }
+                // RCLCPP_INFO(this->get_logger(), "3");
+                }
+            }
+        }
+
+        // Update the last confidence matrix
+        for (int i = 0; i < 100; i++) {
+            for (int j = 0; j < 100; j++) {
+                if (transformed_local_grid.at<uint8_t>(i*10, j*10) == 1) {
+                    last_confidence[i][j] = 1;
+                }
+                else {
+                    last_confidence[i][j] = 0;
+                }
+            }
+        }
+
+    }
+
+    void insertPoint(int row, int col){
+        for (int i = row; i < row+10; i++) {
+            for (int j = col; j < col+10; j++) {
+                global_map.at<uint8_t>(i, j) = 1;
             }
         }
     }
@@ -241,6 +306,12 @@ private:
 
     // Global occupancy grid
     cv::Mat global_map;
+
+    // Convidence matrix
+    int confidence_matrix[100][100];
+
+    // Last confidence matrix
+    int last_confidence[100][100];
 };
 
 int main(int argc, char** argv) {

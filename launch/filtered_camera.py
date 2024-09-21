@@ -24,7 +24,27 @@ def generate_launch_description():
                 'enable_accel': 'true',
                 'unite_imu_method': '2',
                 'rgb_camera.color_profile': '640,480,30',
-                'depth_module.depth_profile': '640,480,30'
+                'depth_module.depth_profile': '640,480,30',
+                'temporal_filter.enable': 'true',
+                'hole_filling_filter.enable': 'true'
             }.items()
+        ),
+
+        # Launch RTAB-Map Odometry
+        Node(
+            package='rtabmap_odom',
+            executable='rgbd_odometry',
+            name='rtabmap_odometry',
+            output='screen',
+            remappings=[
+                ('rgb/image', '/camera/camera/color/image_raw'),
+                ('depth/image', '/camera/camera/aligned_depth_to_color/image_raw'),
+                ('rgb/camera_info', '/camera/camera/color/camera_info'),
+                ('imu', '/camera/camera/imu'),
+            ],
+            parameters=[
+                {'frame_id': 'camera_link'},
+                {'wait_imu_to_init': True}
+            ]
         ),
     ])

@@ -23,8 +23,10 @@ def generate_launch_description():
                 'enable_gyro': 'true',
                 'enable_accel': 'true',
                 'unite_imu_method': '2',
-                'rgb_camera.color_profile': '640,480,30',
-                'depth_module.depth_profile': '640,480,30'
+                'rgb_camera.color_profile': '1280,720,30',
+                'depth_module.depth_profile': '1280,720,30',
+                'temporal_filter.enable': 'true',
+                'hole_filling_filter.enable': 'true'
             }.items()
         ),
 

@@ -23,6 +23,11 @@ find_package(OpenCV REQUIRED)
 find_package(Open3D REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+find_package(pcl_conversions REQUIRED)
+find_package(pcl_ros REQUIRED)
 # uncomment the following section in order to fill in
 # further dependencies manually.
 # find_package(<dependency> REQUIRED)
@@ -40,7 +45,7 @@ add_executable(occupancy src/temp3.cc)
 
 ament_target_dependencies(cybathlon rclcpp Eigen3 OpenCV Open3D cv_bridge nav_msgs)
 ament_target_dependencies(temp rclcpp Eigen3 OpenCV Open3D cv_bridge nav_msgs)
-ament_target_dependencies(occupancy rclcpp Eigen3 OpenCV Open3D cv_bridge nav_msgs)
+ament_target_dependencies(occupancy rclcpp Eigen3 OpenCV cv_bridge nav_msgs tf2 tf2_ros tf2_geometry_msgs pcl_conversions pcl_ros)
 # # Link libraries
 # target_include_directories(cybathlon PRIVATE
 #   ${EIGEN3_INCLUDE_DIR}

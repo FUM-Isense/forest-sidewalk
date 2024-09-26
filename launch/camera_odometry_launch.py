@@ -13,6 +13,13 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            name='static_transform_publisher',
+            arguments=['0', '0', '0', '0', '0', '0', 'base_link', 'camera_link']
+        ),
+
         # Include the RealSense camera launch file
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(realsense_launch_file_dir),
@@ -23,8 +30,14 @@ def generate_launch_description():
                 'enable_gyro': 'true',
                 'enable_accel': 'true',
                 'unite_imu_method': '2',
-                'rgb_camera.color_profile': '1280,720,30',
-                'depth_module.depth_profile': '1280,720,30',
+                'pointcloud.enable': 'true',
+                'pointcloud.allow_no_texture_points': 'true',
+                'pointcloud.stream_filter': '0',
+                # 'pointcloud.stream_index_filter': '1',
+                # 'rgb_camera.color_profile': '1280,720,30',
+                # 'depth_module.depth_profile': '1280,720,30',
+                'rgb_camera.color_profile': '640,480,30',
+                'depth_module.depth_profile': '640,480,30',
                 'temporal_filter.enable': 'true',
                 'hole_filling_filter.enable': 'true'
             }.items()
@@ -43,7 +56,7 @@ def generate_launch_description():
                 ('imu', '/camera/camera/imu'),
             ],
             parameters=[
-                {'frame_id': 'camera_link'},
+                {'frame_id': 'base_link'},
                 {'wait_imu_to_init': True}
             ]
         ),

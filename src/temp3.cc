@@ -34,7 +34,7 @@ public:
     AStarPlanner(const cv::Mat& global_map) : global_map_(global_map) {
         rows_ = global_map.rows;
         cols_ = global_map.cols;
-        safe_distance_ = 5; // Safe distance from obstacles (safe = 70cm == 14cells[5cm each])
+        safe_distance_ = 8; // Safe distance from obstacles (safe = 70cm == 14cells[5cm each])
         distances_to_obstacles_ = computeDistancesToObstacles(global_map_);
     }
 
@@ -394,7 +394,7 @@ public:
 
         // Call A* planner
         AStarPlanner planner(global_occupancy_grid_);
-        std::pair<int, int> start = {(199 - current_x_ * 20), (100 - current_y_ * 20)};
+        std::pair<int, int> start = {std::min((199 - current_x_ * 20), 199.0), (100 - current_y_ * 20)};
         std::pair<int, int> goal = {20, 100}; // Example goal
 
         std::vector<std::pair<int, int>> path = planner.plan(start, goal);
@@ -417,7 +417,10 @@ public:
             rgbGrid.at<cv::Vec3b>(p.first, p.second) = cv::Vec3b(0, 0, 255);  // Red for the path
         }
 
-        double angle_path = fitLineAndGetAngle(path);
+        if (frame_counter == 15) {
+            angle_path = fitLineAndGetAngle(path);
+            frame_counter = 0;
+        }
 
         RCLCPP_INFO(this->get_logger(), "%lf %lf", angle_path, current_yaw_ * (180.0 / CV_PI));
 
@@ -426,7 +429,7 @@ public:
         bool audio_feedback = true;  // Set this to true to enable audio feedback
         // int count = 0;               // Initialize the count variable
         
-        if (x < -15.0) {
+        if (x < -20.0) {
             if (state != 'r') {
                 RCLCPP_INFO(this->get_logger(), "Right");
                 if (audio_feedback) {
@@ -434,7 +437,7 @@ public:
                 }
                 state = 'r';
             }
-        } else if (x > 15.0) {
+        } else if (x > 20.0) {
             if (state != 'l') {
                 RCLCPP_INFO(this->get_logger(), "Left");
                 if (audio_feedback) {
@@ -453,8 +456,7 @@ public:
                 }
             }
         }
-
-        
+        frame_counter++;
 
         rgbGrid.at<cv::Vec3b>(start.first, start.second) = cv::Vec3b(255, 0, 0); // current position
 
@@ -531,6 +533,10 @@ private:
     int last_confidence[200][200];
 
     char state = 'none';
+
+    double angle_path = 0;
+
+    int frame_counter = 0;
 
     std::chrono::steady_clock::time_point start_time_;
 };

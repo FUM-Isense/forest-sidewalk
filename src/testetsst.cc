@@ -14,78 +14,150 @@
 #include <tf2/LinearMath/Matrix3x3.h>
 #include <opencv2/opencv.hpp>
 #include <queue>
-#include <vector>
+#include <unordered_map>
 #include <cmath>
+#include <limits>
+#include <vector>
+#include <cstdlib>
 
-// Struct for storing grid coordinates and the cost
-struct Node {
-    int x, y;
-    float cost, heuristic;
-    
-    Node(int x_, int y_, float cost_, float heuristic_) 
-        : x(x_), y(y_), cost(cost_), heuristic(heuristic_) {}
-    
-    // Comparator to prioritize nodes with lower total cost (cost + heuristic)
-    bool operator<(const Node& other) const {
-        return (cost + heuristic) > (other.cost + other.heuristic);
+// Define a hashing function for std::pair<int, int> for unordered_map
+struct PairHash {
+    template <class T1, class T2>
+    std::size_t operator()(const std::pair<T1, T2>& p) const {
+        return std::hash<T1>()(p.first) ^ std::hash<T2>()(p.second);
     }
 };
 
-// Function to compute the heuristic (Manhattan distance)
-float heuristic(int x1, int y1, int x2, int y2) {
-    return std::abs(x1 - x2) + std::abs(y1 - y2);  // Manhattan distance
-}
-
-// A* pathfinding function
-std::vector<std::pair<int, int>> a_star(const cv::Mat& map, int start_x, int start_y, int goal_x, int goal_y) {
-    std::priority_queue<Node> open_set;
-    std::vector<std::vector<bool>> closed_set(map.rows, std::vector<bool>(map.cols, false));
-    std::vector<std::vector<std::pair<int, int>>> came_from(map.rows, std::vector<std::pair<int, int>>(map.cols, {-1, -1}));
-
-    open_set.push(Node(start_x, start_y, 0.0f, heuristic(start_x, start_y, goal_x, goal_y)));
-
-    std::vector<std::pair<int, int>> directions = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};  // 4 directions
-
-    while (!open_set.empty()) {
-        Node current = open_set.top();
-        open_set.pop();
-
-        // Check if the goal is reached
-        if (current.x == goal_x && current.y == goal_y) {
-            std::vector<std::pair<int, int>> path;
-            while (came_from[current.x][current.y].first != -1) {
-                path.emplace_back(current.x, current.y);
-                std::tie(current.x, current.y) = came_from[current.x][current.y];
-            }
-            std::reverse(path.begin(), path.end());
-            return path;
-        }
-
-        // Mark the current node as closed
-        closed_set[current.x][current.y] = true;
-
-        // Explore neighbors
-        for (const auto& dir : directions) {
-            int neighbor_x = current.x + dir.first;
-            int neighbor_y = current.y + dir.second;
-
-            // Check if the neighbor is within bounds and not an obstacle or visited
-            if (neighbor_x >= 0 && neighbor_x < map.rows && neighbor_y >= 0 && neighbor_y < map.cols &&
-                map.at<uint8_t>(neighbor_x, neighbor_y) == 0 && !closed_set[neighbor_x][neighbor_y]) {
-                
-                float new_cost = current.cost + 1.0f;  // Cost for moving to neighbor
-                open_set.push(Node(neighbor_x, neighbor_y, new_cost, heuristic(neighbor_x, neighbor_y, goal_x, goal_y)));
-                came_from[neighbor_x][neighbor_y] = {current.x, current.y};
-            }
-        }
+// A* Planner class
+class AStarPlanner {
+public:
+    AStarPlanner(const cv::Mat& global_map) : global_map_(global_map) {
+        rows_ = global_map.rows;
+        cols_ = global_map.cols;
+        safe_distance_ = 8; // Safe distance from obstacles (safe = 70cm == 14cells[5cm each])
+        distances_to_obstacles_ = computeDistancesToObstacles(global_map_);
     }
 
-    return {};  // Return empty path if no path is found
-}
+    // A* planning method
+    std::vector<std::pair<int, int>> plan(const std::pair<int, int>& start, const std::pair<int, int>& goal) {
+        std::priority_queue<Node, std::vector<Node>, NodeComparator> open_set;
+        std::unordered_map<std::pair<int, int>, double, PairHash> g_costs;
+        std::unordered_map<std::pair<int, int>, std::pair<int, int>, PairHash> came_from;
 
+        // Push the start node with a cost of 0
+        open_set.emplace(0, start);
+        g_costs[start] = 0;
+
+        while (!open_set.empty()) {
+            auto current = open_set.top().cell;
+            open_set.pop();
+
+            // If the goal is reached, reconstruct the path
+            if (current == goal) {
+                return reconstructPath(came_from, current);
+            }
+
+            // Check the neighbors (up, down, left, right)
+            for (const auto& [dx, dy] : neighbors) {
+                std::pair<int, int> neighbor = {current.first + dx, current.second + dy};
+
+                if (isValid(neighbor) && global_map_.at<uint8_t>(neighbor.first, neighbor.second) == 0) {
+                    double new_cost = g_costs[current] + 1;
+
+                    // Add cost if too close to obstacles
+                    int dist_to_obstacle = distances_to_obstacles_[neighbor.first][neighbor.second];
+                    if (dist_to_obstacle < safe_distance_) {
+                        new_cost += (safe_distance_ - dist_to_obstacle);
+                    }
+
+                    if (!g_costs.count(neighbor) || new_cost < g_costs[neighbor]) {
+                        g_costs[neighbor] = new_cost;
+                        double priority = new_cost + heuristic(neighbor, goal);
+                        open_set.emplace(priority, neighbor);
+                        came_from[neighbor] = current;
+                    }
+                }
+            }
+        }
+        return {}; // Return an empty path if there's no valid path
+    }
+
+private:
+    struct Node {
+        double cost;
+        std::pair<int, int> cell;
+        Node(double c, std::pair<int, int> p) : cost(c), cell(p) {}
+    };
+
+    struct NodeComparator {
+        bool operator()(const Node& a, const Node& b) {
+            return a.cost > b.cost; // Min-heap behavior
+        }
+    };
+
+    const std::vector<std::pair<int, int>> neighbors = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+    int rows_, cols_, safe_distance_;
+    cv::Mat global_map_;
+    std::vector<std::vector<int>> distances_to_obstacles_;
+
+    // Heuristic function for A*
+    double heuristic(const std::pair<int, int>& cell, const std::pair<int, int>& goal) {
+        return std::abs(cell.first - goal.first) + std::abs(cell.second - goal.second);
+    }
+
+    // Reconstruct the path by tracing back from the goal
+    std::vector<std::pair<int, int>> reconstructPath(const std::unordered_map<std::pair<int, int>, std::pair<int, int>, PairHash>& came_from,
+                                                     std::pair<int, int> current) {
+        std::vector<std::pair<int, int>> path;
+        while (came_from.count(current)) {
+            path.push_back(current);
+            current = came_from.at(current);
+        }
+        std::reverse(path.begin(), path.end());
+        return path;
+    }
+
+    // Check if a cell is within bounds
+    bool isValid(const std::pair<int, int>& cell) const {
+        return cell.first >= 0 && cell.first < rows_ && cell.second >= 0 && cell.second < cols_;
+    }
+
+    // Compute distances to obstacles for each cell
+    std::vector<std::vector<int>> computeDistancesToObstacles(const cv::Mat& grid) {
+        std::vector<std::vector<int>> distances(rows_, std::vector<int>(cols_, std::numeric_limits<int>::max()));
+        std::queue<std::pair<int, int>> queue;
+
+        // Initialize distances for obstacle cells and add them to the queue
+        for (int i = 0; i < rows_; ++i) {
+            for (int j = 0; j < cols_; ++j) {
+                if (grid.at<uint8_t>(i, j) != 0) {
+                    distances[i][j] = 0;
+                    queue.emplace(i, j);
+                }
+            }
+        }
+
+        // Perform BFS to calculate distances from obstacles
+        while (!queue.empty()) {
+            auto [x, y] = queue.front();
+            queue.pop();
+            for (const auto& [dx, dy] : neighbors) {
+                int nx = x + dx, ny = y + dy;
+                if (isValid({nx, ny}) && distances[nx][ny] > distances[x][y] + 1) {
+                    distances[nx][ny] = distances[x][y] + 1;
+                    queue.emplace(nx, ny);
+                }
+            }
+        }
+
+        return distances;
+    }
+};
+
+// PointCloudProcessor class to handle point cloud data and A* planning
 class PointCloudProcessor : public rclcpp::Node {
 public:
-    PointCloudProcessor() : Node("pointcloud_processor"), global_map(1000, 1000, CV_8UC1, cv::Scalar(0)) {
+    PointCloudProcessor() : Node("pointcloud_processor"){
         // Subscribe to the pointcloud and odometry topics
         pointcloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
             "/odom_last_frame", rclcpp::QoS(10).best_effort(),
@@ -97,16 +169,75 @@ public:
             std::bind(&PointCloudProcessor::odomCallback, this, std::placeholders::_1)
         );
 
+        // Initialize parameters
+        scaling_factor_ = 20.0;  // 100 pixels per meter (1 pixel = 0.01 m)
+        occupancy_grid_rows_ = 100;
+        occupancy_grid_cols_ = 80;
+
+        global_grid_rows_ = 200;
+        global_grid_cols_ = 200;
+
+        global_occupancy_grid_ = cv::Mat::zeros(global_grid_rows_, global_grid_cols_, CV_8UC1);
+        x_origin_ = global_grid_rows_ / 2;
+        y_origin_ = global_grid_cols_ / 2;
+        
         // Initializing the confidence matrix
-        for (int i = 0; i < 100; i++) {
-            for (int j = 0; j < 100; j++) {
+        for (int i = 0; i < 200; i++) {
+            for (int j = 0; j < 200; j++) {
                 confidence_matrix[i][j] = 0;  // Initialize the array with zeros
                 last_confidence[i][j] = 0;  // Initialize the array with zeros
             }
         }
-        
     }
+
+    // Function to calculate the angle between the fitted line and the x-axis
+    double fitLineAndGetAngle(const std::vector<std::pair<int, int>>& path) {
+        // Extract 10 points (from index 5 to 15)
+        std::vector<cv::Point2f> points;
+        for (int i = 5; i < 15 && i < path.size(); ++i) {
+            points.push_back(cv::Point2f(static_cast<float>(path[i].first), static_cast<float>(path[i].second)));
+        }
+
+        // Convert the points into a format suitable for cv::fitLine
+        cv::Mat pointsMat(points.size(), 1, CV_32FC2, points.data());
+
+        // Fit a line to the points
+        cv::Vec4f line;
+        cv::fitLine(pointsMat, line, cv::DIST_L2, 0, 0.01, 0.01);
+
+        // Extract line parameters: vx, vy, x0, y0
+        float vx = line[0];  // Direction vector's x-component
+        float vy = line[1];  // Direction vector's y-component
+        float x0 = line[2];  // A point on the line (x-coordinate)
+        float y0 = line[3];  // A point on the line (y-coordinate)
+
+        // Calculate the slope of the line
+        float slope = vy / vx;
+
+        // Define two points on the line (x0, y0 and another distant point)
+        int x1 = 500;  // Example x valueangle_radians
+        int y1 = static_cast<int>(y0 + ((x1 - x0) * slope));  // Calculate corresponding y value
+
+        // Calculate the angle using atan2
+        double delta_x = x1 - x0;
+        double delta_y = y1 - y0;
+        double angle_radians = std::atan2(delta_y, delta_x);
+
+        // Convert radians to degrees
+        double angle_degrees = angle_radians * (180.0 / CV_PI);
+
+        // // Ensure the angle is positive and correct it to fit between 0 and 180 degrees
+        // if (angle_degrees < 0) {
+        //     angle_degrees = -angle_degrees;
+        // } else {
+        //     angle_degrees = 180.0 - angle_degrees;
+        // }
+
+        return angle_degrees;
+    }
+
     void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+        start_time_ = std::chrono::steady_clock::now();
         pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
         pcl::fromROSMsg(*msg, *pcl_cloud);
 
@@ -164,8 +295,8 @@ public:
             }
         }
 
-        cv::Mat occupancy_grid = cv::Mat::zeros(500, 400, CV_8UC1);
-        int step = 10;
+        cv::Mat occupancy_grid = cv::Mat::zeros(100, 80, CV_8UC1);
+        int step = 5;
         bool occupide_cell = false;
         // Iterate over the point count grid and apply the threshold
         for (int row = 300; row < 500; row += step) {
@@ -182,65 +313,164 @@ public:
                 }
                 // Check if the patch is dense enough and mark it
                 if (occupide_cell) {
-                    for (int i = 0; i < step; i++) {
-                        for (int j = 0; j < step; j++) {
-                            if ((row + i < 500) && (col + j < 400)) {
-                                occupancy_grid.at<uint8_t>(row + i, col + j) = 1;
-                            }
-                        }
-                    }
+                    occupancy_grid.at<uint8_t>(row / step, col / step) = 1;
                     occupide_cell = false;
                 }
             }
         }
 
-        // Visualize the occupancy grid using OpenCV
-        cv::Mat displayLocalGrid;
-        point_count_grid.convertTo(displayLocalGrid, CV_8UC1, 255);  // Convert occupancy grid to 8-bit for display
 
-        cv::imshow("Local Map", displayLocalGrid);  // Show the grid
-        if (cv::waitKey(1) == 27) return;  // Exit on ESC key
+        cv::Mat transformed_local_grid = cv::Mat::zeros(global_grid_rows_, global_grid_cols_, CV_8UC1);;
+        // Transform local occupancy grid to global occupancy grid
+        for (int row = 0; row < occupancy_grid.rows; ++row) {
+            for (int col = 0; col < occupancy_grid.cols; ++col) {
+                if (occupancy_grid.at<uint8_t>(row, col) == 1) {
+                    // Compute local coordinates (in meters)
+                    double x_local = (occupancy_grid_rows_ / 2 - row) / scaling_factor_;
+                    double y_local = (col - occupancy_grid_cols_ / 2) / scaling_factor_;
 
-        updateGlobalMap(occupancy_grid);
+                    // Rotate and translate to get global coordinates
+                    double x_global = current_x_ + cos(current_yaw_) * x_local - sin(current_yaw_) * y_local;
+                    double y_global = current_y_ + sin(current_yaw_) * x_local + cos(current_yaw_) * y_local;
 
-        // Visualize the occupancy grid using OpenCV
+                    // Map to global grid indices
+                    int global_row = global_grid_rows_ / 2 - static_cast<int>(x_global * scaling_factor_);
+                    int global_col = static_cast<int>(y_global * scaling_factor_) + global_grid_cols_ / 2;
+
+                    // Ensure indices are within bounds
+                    if (global_row >= -50 && global_row < global_grid_rows_ - 50 &&
+                        global_col >= 0 && global_col < global_grid_cols_) {
+                        transformed_local_grid.at<uint8_t>(global_row + 50, global_col) = 1;
+                    }
+                }
+            }
+        }
+
+        int conf_threshold = 15;
+        for (int i = 0; i < global_grid_rows_; i++) {
+            for (int j = 0; j < global_grid_cols_; j++) {
+                if (last_confidence[i][j] > 0) { // Comparing 1
+                    if (confidence_matrix[i][j] > conf_threshold) { // Confidental point
+                        continue;
+                    }
+                    else if (confidence_matrix[i][j] == conf_threshold) { // New point
+                        global_occupancy_grid_.at<uint8_t>(i, j) = 1;
+                        confidence_matrix[i][j]++;
+                    }
+                    else if (confidence_matrix[i][j] >= 0) { // Possible Point
+                        confidence_matrix[i][j]++;
+                    }
+                    // RCLCPP_INFO(this->get_logger(), "2");
+                }
+                else if (last_confidence[i][j] == 0) { // Comparing 0s
+                    if (confidence_matrix[i][j] >= conf_threshold) { // Confidental point
+                        continue;
+                    }
+                    else if (confidence_matrix[i][j] >= 0) { // Noise Point
+                        confidence_matrix[i][j]= 0;
+                    }
+                // RCLCPP_INFO(this->get_logger(), "3");
+                }
+            }
+        }
+
+        // Update the last confidence matrix
+        for (int i = 0; i < global_grid_rows_; i++) {
+            for (int j = 0; j < global_grid_cols_; j++) {
+                if (transformed_local_grid.at<uint8_t>(i, j) == 1) {
+                    last_confidence[i][j] = 1;
+                }
+                else {
+                    last_confidence[i][j] = 0;
+                }
+            }
+        }
+        // // Visualize the global map with the path
+        // cv::Mat displayLocalGrid;
+        // point_count_grid.convertTo(displayLocalGrid, CV_8UC1, 255);  // Convert occupancy grid to 8-bit for display
+
+        // cv::imshow("Local Map", displayLocalGrid);  // Show the grid with path
+        // if (cv::waitKey(1) == 27) return;  // Exit on ESC key
+
+        // Call A* planner
+        AStarPlanner planner(global_occupancy_grid_);
+        std::pair<int, int> start = {(199 - current_x_ * 20), (100 - current_y_ * 20)};
+        std::pair<int, int> goal = {20, 100}; // Example goal
+
+        std::vector<std::pair<int, int>> path = planner.plan(start, goal);
+
+
+        // Visualize the global map with the path
         cv::Mat displayGlobalGrid;
-        global_map.convertTo(displayGlobalGrid, CV_8UC1, 255);  // Convert occupancy grid to 8-bit for display
+        global_occupancy_grid_.convertTo(displayGlobalGrid, CV_8UC1, 255);  // Convert occupancy grid to 8-bit for display
 
-        cv::imshow("Global Map", displayGlobalGrid);  // Show the grid
-        if (cv::waitKey(1) == 27) return;  // Exit on ESC key
+        cv::Mat rgbGrid;
+        cv::cvtColor(displayGlobalGrid, rgbGrid, cv::COLOR_GRAY2BGR);
 
-
-        // // Call A* pathfinding
-        // int start_x = static_cast<int>(999);
-        // if ((1000 - (current_odom_x * 100)) < 1000) int start_x = static_cast<int>(999 - (current_odom_x * 100));
-        // int start_y = static_cast<int>(500 - (current_odom_y * 100));
-        // int goal_x = 500;  // Goal point (500, 500)
-        // int goal_y = 500;
-
-        // // Run A* to get the path
-        // std::vector<std::pair<int, int>> path = a_star(global_map, start_x, start_y, goal_x, goal_y);
-
-        // // Draw the path on the global map
-        // for (const auto& [x, y] : path) {
-        //     global_map.at<uint8_t>(x, y) = 150;  // Use a different value (e.g., 150) for the path
+        // for (const auto& p : path) {
+        //     // displayGlobalGrid.at<uint8_t>(p.first, p.second) = 128; // Mark the path on the map
+        //     rgbGrid.at<cv::Vec3b>(p.first, p.second) = cv::Vec3b(0, 0, 255);  // Red for the path
         // }
 
-        // // Visualize the global map with the path
-        // cv::Mat displayGlobalGrid;
-        // global_map.convertTo(displayGlobalGrid, CV_8UC1, 255);  // Convert occupancy grid to 8-bit for display
-        // cv::imshow("Global Map with Path", displayGlobalGrid);  // Show the global map with the path
+        for (int i = 5; i < 15; ++i) {
+            const auto& p = path[i];
+            rgbGrid.at<cv::Vec3b>(p.first, p.second) = cv::Vec3b(0, 0, 255);  // Red for the path
+        }
 
-        // if (cv::waitKey(1) == 27) return;  // Exit on ESC key
+        double angle_path = fitLineAndGetAngle(path);
+
+        RCLCPP_INFO(this->get_logger(), "%lf %lf", angle_path, current_yaw_ * (180.0 / CV_PI));
+
+        double x = angle_path - (current_yaw_ * (180.0 / CV_PI));
+        
+        bool audio_feedback = true;  // Set this to true to enable audio feedback
+        // int count = 0;               // Initialize the count variable
+        
+        if (x < -15.0) {
+            if (state != 'r') {
+                RCLCPP_INFO(this->get_logger(), "Right");
+                if (audio_feedback) {
+                    system("espeak \"right\"");
+                }
+                state = 'r';
+            }
+        } else if (x > 15.0) {
+            if (state != 'l') {
+                RCLCPP_INFO(this->get_logger(), "Left");
+                if (audio_feedback) {
+                    system("espeak \"left\"");
+                }
+                state = 'l';
+            }
+        } else{
+            if (state != 'f') {
+                if (std::abs(x) < 5.0){
+                    RCLCPP_INFO(this->get_logger(), "Forward");
+                    if (audio_feedback) {
+                        system("espeak \"Forward\"");
+                    }
+                    state = 'f';
+                }
+            }
+        }
+
+        
+
+        rgbGrid.at<cv::Vec3b>(start.first, start.second) = cv::Vec3b(255, 0, 0); // current position
+
+        // Resize the grid from 200x200 to 800x800 for better visualization
+        cv::Mat enlargedGrid;
+        cv::resize(rgbGrid, enlargedGrid, cv::Size(800, 800), 0, 0, cv::INTER_NEAREST);  // Resize using nearest neighbor interpolation
+
+        // Display the enlarged RGB matrix with path visualization
+        cv::imshow("Enlarged Confidence Matrix in RGB", enlargedGrid);
+        if (cv::waitKey(1) == 27) return;  // Exit on ESC key
+        
+        // RCLCPP_INFO(this->get_logger(), "2: %ld ms", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time_).count());
     }
-    // Callback to store odometry data
+
+
     void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
-        // Get the odometry data for Global map (position and orientation)
-        current_odom_x = msg->pose.pose.position.x;
-        current_odom_y = msg->pose.pose.position.y;
-        current_odom_theta = msg->pose.pose.orientation.z; 
-
-
         // Extract the quaternion and position from odometry
         tf2::Quaternion q(
             msg->pose.pose.orientation.x,
@@ -262,98 +492,47 @@ public:
 
         // Store the inverse of the odometry transform
         odom_to_start_ = odom_transform.inverse();
-    }
 
+        // Store current pose
+        current_x_ = msg->pose.pose.position.x;
+        current_y_ = msg->pose.pose.position.y;
 
-
-    void updateGlobalMap(const cv::Mat& local_grid) {
-        // Translate the local grid based on the current odometry
-        cv::Mat transform = cv::getRotationMatrix2D(cv::Point2f(local_grid.cols / 2, local_grid.rows / 2), 
-                                                    current_odom_theta * 180.0 / M_PI, 1.0);
-        // Add translation based on odometry
-        transform.at<double>(0, 2) += (current_odom_x * 100 + 300);
-        transform.at<double>(1, 2) += (current_odom_y * 100 + 500);
-
-        // Create a temporary global grid to hold the transformed local grid
-        cv::Mat transformed_local_grid;
-        // cv::warpAffine(local_grid, transformed_local_grid, transform, global_map.size(), cv::INTER_NEAREST, cv::BORDER_TRANSPARENT);
-        cv::warpAffine(local_grid, transformed_local_grid, transform, global_map.size(), cv::INTER_NEAREST, cv::BORDER_CONSTANT, cv::Scalar(0));
-
-        
-        for (int i = 0; i < 100; i++) {
-            for (int j = 0; j < 100; j++) {
-                if (last_confidence[i][j] > 0) { // Comparing 1
-                    if (confidence_matrix[i][j] > 10) { // Confidental point
-                        continue;
-                    }
-                    else if (confidence_matrix[i][j] == 10) { // New point
-                        insertPoint(i*10, j*10);
-                        confidence_matrix[i][j]++;
-                    }
-                    else if (confidence_matrix[i][j] >= 0) { // Possible Point
-                        confidence_matrix[i][j]++;
-                    }
-                    // RCLCPP_INFO(this->get_logger(), "2");
-                }
-                else if (last_confidence[i][j] == 0) { // Comparing 0s
-                    if (confidence_matrix[i][j] >= 10) { // Confidental point
-                        continue;
-                    }
-                    else if (confidence_matrix[i][j] >= 0) { // Noise Point
-                        confidence_matrix[i][j]= 0;
-                    }
-                // RCLCPP_INFO(this->get_logger(), "3");
-                }
-            }
-        }
-
-        // Update the last confidence matrix
-        for (int i = 0; i < 100; i++) {
-            for (int j = 0; j < 100; j++) {
-                if (transformed_local_grid.at<uint8_t>(i*10, j*10) == 1) {
-                    last_confidence[i][j] = 1;
-                }
-                else {
-                    last_confidence[i][j] = 0;
-                }
-            }
-        }
-
-    }
-
-    void insertPoint(int row, int col){
-        for (int i = row; i < row+10; i++) {
-            for (int j = col; j < col+10; j++) {
-                global_map.at<uint8_t>(i, j) = 1;
-            }
-        }
+        // Convert quaternion to yaw
+        tf2::Matrix3x3 m(q);
+        double roll, pitch, yaw;
+        m.getRPY(roll, pitch, yaw);
+        current_yaw_ = yaw;
     }
 
 private:
-
     // Subscribers for the pointcloud and odometry
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
 
-
     // Variable to store the odometry transformation
     tf2::Transform odom_to_start_;
 
-
-    // Variables to store odometry data
-    double current_odom_x = 0.0;
-    double current_odom_y = 0.0;
-    double current_odom_theta = 0.0;
+    // Current robot pose
+    double current_x_, current_y_, current_yaw_;
 
     // Global occupancy grid
-    cv::Mat global_map;
+    cv::Mat global_occupancy_grid_;
+    int global_grid_rows_, global_grid_cols_;
+    int x_origin_, y_origin_;
 
-    // Convidence matrix
-    int confidence_matrix[100][100];
+    // Parameters for occupancy grid
+    double scaling_factor_;
+    int occupancy_grid_rows_, occupancy_grid_cols_;
+
+    // Confidence matrix
+    int confidence_matrix[200][200];
 
     // Last confidence matrix
-    int last_confidence[100][100];
+    int last_confidence[200][200];
 
+    char state = 'none';
+
+    std::chrono::steady_clock::time_point start_time_;
 };
 
 int main(int argc, char **argv) {

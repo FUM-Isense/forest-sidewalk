@@ -18,6 +18,7 @@
 #include <cmath>
 #include <limits>
 #include <vector>
+#include <cstdlib>
 
 // Define a hashing function for std::pair<int, int> for unordered_map
 struct PairHash {
@@ -33,7 +34,7 @@ public:
     AStarPlanner(const cv::Mat& global_map) : global_map_(global_map) {
         rows_ = global_map.rows;
         cols_ = global_map.cols;
-        safe_distance_ = 20; // Safe distance from obstacles
+        safe_distance_ = 5; // Safe distance from obstacles (safe = 70cm == 14cells[5cm each])
         distances_to_obstacles_ = computeDistancesToObstacles(global_map_);
     }
 
@@ -188,6 +189,53 @@ public:
             }
         }
     }
+
+    // Function to calculate the angle between the fitted line and the x-axis
+    double fitLineAndGetAngle(const std::vector<std::pair<int, int>>& path) {
+        // Extract 10 points (from index 5 to 15)
+        std::vector<cv::Point2f> points;
+        for (int i = 5; i < 15 && i < path.size(); ++i) {
+            points.push_back(cv::Point2f(static_cast<float>(path[i].first), static_cast<float>(path[i].second)));
+        }
+
+        // Convert the points into a format suitable for cv::fitLine
+        cv::Mat pointsMat(points.size(), 1, CV_32FC2, points.data());
+
+        // Fit a line to the points
+        cv::Vec4f line;
+        cv::fitLine(pointsMat, line, cv::DIST_L2, 0, 0.01, 0.01);
+
+        // Extract line parameters: vx, vy, x0, y0
+        float vx = line[0];  // Direction vector's x-component
+        float vy = line[1];  // Direction vector's y-component
+        float x0 = line[2];  // A point on the line (x-coordinate)
+        float y0 = line[3];  // A point on the line (y-coordinate)
+
+        // Calculate the slope of the line
+        float slope = vy / vx;
+
+        // Define two points on the line (x0, y0 and another distant point)
+        int x1 = 500;  // Example x valueangle_radians
+        int y1 = static_cast<int>(y0 + ((x1 - x0) * slope));  // Calculate corresponding y value
+
+        // Calculate the angle using atan2
+        double delta_x = x1 - x0;
+        double delta_y = y1 - y0;
+        double angle_radians = std::atan2(delta_y, delta_x);
+
+        // Convert radians to degrees
+        double angle_degrees = angle_radians * (180.0 / CV_PI);
+
+        // // Ensure the angle is positive and correct it to fit between 0 and 180 degrees
+        // if (angle_degrees < 0) {
+        //     angle_degrees = -angle_degrees;
+        // } else {
+        //     angle_degrees = 180.0 - angle_degrees;
+        // }
+
+        return angle_degrees;
+    }
+
     void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
         start_time_ = std::chrono::steady_clock::now();
         pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
@@ -283,7 +331,7 @@ public:
 
                     // Rotate and translate to get global coordinates
                     double x_global = current_x_ + cos(current_yaw_) * x_local - sin(current_yaw_) * y_local;
-                    double y_global = current_y_ + sin(current_yaw_) * x_local + cos(current_yaw_) * y_local;
+                    double y_global = - current_y_ + sin(current_yaw_) * x_local + cos(current_yaw_) * y_local;
 
                     // Map to global grid indices
                     int global_row = global_grid_rows_ / 2 - static_cast<int>(x_global * scaling_factor_);
@@ -337,25 +385,88 @@ public:
                 }
             }
         }
+        // // Visualize the global map with the path
+        // cv::Mat displayLocalGrid;
+        // point_count_grid.convertTo(displayLocalGrid, CV_8UC1, 255);  // Convert occupancy grid to 8-bit for display
+
+        // cv::imshow("Local Map", displayLocalGrid);  // Show the grid with path
+        // if (cv::waitKey(1) == 27) return;  // Exit on ESC key
 
         // Call A* planner
         AStarPlanner planner(global_occupancy_grid_);
-        std::pair<int, int> start = {180, 100};
+        std::pair<int, int> start = {(199 - current_x_ * 20), (100 - current_y_ * 20)};
         std::pair<int, int> goal = {20, 100}; // Example goal
 
         std::vector<std::pair<int, int>> path = planner.plan(start, goal);
+
 
         // Visualize the global map with the path
         cv::Mat displayGlobalGrid;
         global_occupancy_grid_.convertTo(displayGlobalGrid, CV_8UC1, 255);  // Convert occupancy grid to 8-bit for display
 
-        for (const auto& p : path) {
-            displayGlobalGrid.at<uint8_t>(p.first, p.second) = 128; // Mark the path on the map
+        cv::Mat rgbGrid;
+        cv::cvtColor(displayGlobalGrid, rgbGrid, cv::COLOR_GRAY2BGR);
+
+        // for (const auto& p : path) {
+        //     // displayGlobalGrid.at<uint8_t>(p.first, p.second) = 128; // Mark the path on the map
+        //     rgbGrid.at<cv::Vec3b>(p.first, p.second) = cv::Vec3b(0, 0, 255);  // Red for the path
+        // }
+
+        for (int i = 5; i < 15; ++i) {
+            const auto& p = path[i];
+            rgbGrid.at<cv::Vec3b>(p.first, p.second) = cv::Vec3b(0, 0, 255);  // Red for the path
         }
 
-        cv::imshow("Global Map with Path", displayGlobalGrid);  // Show the grid with path
+        double angle_path = fitLineAndGetAngle(path);
+
+        RCLCPP_INFO(this->get_logger(), "%lf %lf", angle_path, current_yaw_ * (180.0 / CV_PI));
+
+        double x = angle_path - (current_yaw_ * (180.0 / CV_PI));
+        
+        bool audio_feedback = true;  // Set this to true to enable audio feedback
+        // int count = 0;               // Initialize the count variable
+        
+        if (x < -15.0) {
+            if (state != 'r') {
+                RCLCPP_INFO(this->get_logger(), "Right");
+                if (audio_feedback) {
+                    system("espeak \"right\"");
+                }
+                state = 'r';
+            }
+        } else if (x > 15.0) {
+            if (state != 'l') {
+                RCLCPP_INFO(this->get_logger(), "Left");
+                if (audio_feedback) {
+                    system("espeak \"left\"");
+                }
+                state = 'l';
+            }
+        } else{
+            if (state != 'f') {
+                if (std::abs(x) < 5.0){
+                    RCLCPP_INFO(this->get_logger(), "Forward");
+                    if (audio_feedback) {
+                        system("espeak \"Forward\"");
+                    }
+                    state = 'f';
+                }
+            }
+        }
+
+        
+
+        rgbGrid.at<cv::Vec3b>(start.first, start.second) = cv::Vec3b(255, 0, 0); // current position
+
+        // Resize the grid from 200x200 to 800x800 for better visualization
+        cv::Mat enlargedGrid;
+        cv::resize(rgbGrid, enlargedGrid, cv::Size(800, 800), 0, 0, cv::INTER_NEAREST);  // Resize using nearest neighbor interpolation
+
+        // Display the enlarged RGB matrix with path visualization
+        cv::imshow("Enlarged Confidence Matrix in RGB", enlargedGrid);
         if (cv::waitKey(1) == 27) return;  // Exit on ESC key
-        RCLCPP_INFO(this->get_logger(), "2: %ld ms", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time_).count());
+        
+        // RCLCPP_INFO(this->get_logger(), "2: %ld ms", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time_).count());
     }
 
 
@@ -418,6 +529,8 @@ private:
 
     // Last confidence matrix
     int last_confidence[200][200];
+
+    char state = 'none';
 
     std::chrono::steady_clock::time_point start_time_;
 };

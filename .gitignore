@@ -1,7 +1,5 @@
 src/temp.cc
 src/temp2.cc
-.vscode/c_cpp_properties.json
-.vscode/settings.json
 config/nav.yaml
-.vscode/settings.json
+.vscode
 src/testetsst.cc

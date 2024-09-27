@@ -178,6 +178,11 @@ public:
         global_grid_cols_ = 200;
 
         global_occupancy_grid_ = cv::Mat::zeros(global_grid_rows_, global_grid_cols_, CV_8UC1);
+        // Set the entire 81st column to 1
+        // global_occupancy_grid_.col(64).setTo(1);
+
+        // // Set the entire 119th column to 1
+        // global_occupancy_grid_.col(136).setTo(1);
         x_origin_ = global_grid_rows_ / 2;
         y_origin_ = global_grid_cols_ / 2;
         
@@ -194,7 +199,7 @@ public:
     double fitLineAndGetAngle(const std::vector<std::pair<int, int>>& path) {
         // Extract 10 points (from index 5 to 15)
         std::vector<cv::Point2f> points;
-        for (int i = 5; i < 15 && i < path.size(); ++i) {
+        for (int i = 0; i < 10 && i < path.size(); ++i) {
             points.push_back(cv::Point2f(static_cast<float>(path[i].first), static_cast<float>(path[i].second)));
         }
 
@@ -291,7 +296,7 @@ public:
             
             // Ensure the indices are within grid bounds
             if (x >= 0 && x < 500 && y >= -200 && y < 200) {
-                point_count_grid.at<int>(500 - x, 400 - (y + 200))++;  // Increment the point count in the grid cell
+                point_count_grid.at<int>(499 - x, 399 - (y + 200))++;  // Increment the point count in the grid cell
             }
         }
 
@@ -318,7 +323,6 @@ public:
                 }
             }
         }
-
 
         cv::Mat transformed_local_grid = cv::Mat::zeros(global_grid_rows_, global_grid_cols_, CV_8UC1);;
         // Transform local occupancy grid to global occupancy grid
@@ -395,7 +399,7 @@ public:
         // Call A* planner
         AStarPlanner planner(global_occupancy_grid_);
         std::pair<int, int> start = {std::min((199 - current_x_ * 20), 199.0), (100 - current_y_ * 20)};
-        std::pair<int, int> goal = {20, 100}; // Example goal
+        std::pair<int, int> goal = {100, 100}; // Example goal
 
         std::vector<std::pair<int, int>> path = planner.plan(start, goal);
 
@@ -412,7 +416,7 @@ public:
         //     rgbGrid.at<cv::Vec3b>(p.first, p.second) = cv::Vec3b(0, 0, 255);  // Red for the path
         // }
 
-        for (int i = 5; i < 15; ++i) {
+        for (int i = 0; i < 10; ++i) {
             const auto& p = path[i];
             rgbGrid.at<cv::Vec3b>(p.first, p.second) = cv::Vec3b(0, 0, 255);  // Red for the path
         }
@@ -422,9 +426,13 @@ public:
             frame_counter = 0;
         }
 
-        RCLCPP_INFO(this->get_logger(), "%lf %lf", angle_path, current_yaw_ * (180.0 / CV_PI));
+        RCLCPP_INFO(this->get_logger(), "%lf %lf", angle_path, (current_yaw_ * (180.0 / M_PI)));
+        // RCLCPP_INFO(this->get_logger(), "%lf", current_yaw_);
+        // RCLCPP_INFO(this->get_logger(), "after: %lf", current_yaw_);
 
-        double x = angle_path - (current_yaw_ * (180.0 / CV_PI));
+
+
+        double x = angle_path - (current_yaw_ * (180.0 / M_PI));
         
         bool audio_feedback = true;  // Set this to true to enable audio feedback
         // int count = 0;               // Initialize the count variable
@@ -447,7 +455,7 @@ public:
             }
         } else{
             if (state != 'f') {
-                if (std::abs(x) < 5.0){
+                if (std::abs(x) < 10.0){
                     RCLCPP_INFO(this->get_logger(), "Forward");
                     if (audio_feedback) {
                         system("espeak \"Forward\"");
@@ -458,7 +466,7 @@ public:
         }
         frame_counter++;
 
-        rgbGrid.at<cv::Vec3b>(start.first, start.second) = cv::Vec3b(255, 0, 0); // current position
+        rgbGrid.at<cv::Vec3b>(std::min((199 - current_x_ * 20), 199.0), (100 - current_y_ * 20)) = cv::Vec3b(0, 255, 0); // current position
 
         // Resize the grid from 200x200 to 800x800 for better visualization
         cv::Mat enlargedGrid;
@@ -472,39 +480,38 @@ public:
     }
 
 
-    void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
-        // Extract the quaternion and position from odometry
-        tf2::Quaternion q(
-            msg->pose.pose.orientation.x,
-            msg->pose.pose.orientation.y,
-            msg->pose.pose.orientation.z,
-            msg->pose.pose.orientation.w
-        );
-        
-        tf2::Vector3 position(
-            msg->pose.pose.position.x,
-            msg->pose.pose.position.y,
-            msg->pose.pose.position.z
-        );
+void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
+    // Extract the quaternion from odometry
+    tf2::Quaternion q(
+        msg->pose.pose.orientation.x,
+        msg->pose.pose.orientation.y,
+        msg->pose.pose.orientation.z,
+        msg->pose.pose.orientation.w
+    );
+    
+    // Convert quaternion to roll, pitch, and yaw
+    tf2::Matrix3x3 m(q);
+    double roll, pitch, yaw;
+    m.getRPY(roll, pitch, yaw);
 
-        // Create a transform from odometry
-        tf2::Transform odom_transform;
-        odom_transform.setRotation(q);
-        odom_transform.setOrigin(position);
+    
+    // Ignore roll and pitch; only use yaw for 2D plane transformation
+    current_yaw_ = yaw;
 
-        // Store the inverse of the odometry transform
-        odom_to_start_ = odom_transform.inverse();
 
-        // Store current pose
-        current_x_ = msg->pose.pose.position.x;
-        current_y_ = msg->pose.pose.position.y;
+    // Extract position and limit to the 2D plane (x, y)
+    current_x_ = msg->pose.pose.position.x;
+    current_y_ = msg->pose.pose.position.y;
 
-        // Convert quaternion to yaw
-        tf2::Matrix3x3 m(q);
-        double roll, pitch, yaw;
-        m.getRPY(roll, pitch, yaw);
-        current_yaw_ = yaw;
-    }
+    // Create a 2D transformation that ignores z, roll, and pitch
+    tf2::Transform odom_transform_2d;
+    odom_transform_2d.setRotation(tf2::Quaternion(0, 0, sin(current_yaw_ / 2), cos(current_yaw_ / 2)));
+    odom_transform_2d.setOrigin(tf2::Vector3(current_x_, current_y_, 0));  // Zero out the z-axis
+    
+    // Store the inverse of the 2D odometry transform for point cloud alignment
+    odom_to_start_ = odom_transform_2d.inverse();
+}
+
 
 private:
     // Subscribers for the pointcloud and odometry

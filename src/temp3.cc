@@ -178,11 +178,11 @@ public:
         global_grid_cols_ = 200;
 
         global_occupancy_grid_ = cv::Mat::zeros(global_grid_rows_, global_grid_cols_, CV_8UC1);
-        // Set the entire 81st column to 1
-        // global_occupancy_grid_.col(64).setTo(1);
 
-        // // Set the entire 119th column to 1
-        // global_occupancy_grid_.col(136).setTo(1);
+        // Set the entire 81st column to 1
+        global_occupancy_grid_.col(64).setTo(1);
+        global_occupancy_grid_.col(136).setTo(1);
+
         x_origin_ = global_grid_rows_ / 2;
         y_origin_ = global_grid_cols_ / 2;
         
@@ -396,6 +396,11 @@ public:
         // cv::imshow("Local Map", displayLocalGrid);  // Show the grid with path
         // if (cv::waitKey(1) == 27) return;  // Exit on ESC key
 
+        if (current_x_ * 20 >= 78){
+            system("espeak \"Task Passed!\"");
+            exit(0);
+        }
+
         // Call A* planner
         AStarPlanner planner(global_occupancy_grid_);
         std::pair<int, int> start = {std::min((199 - current_x_ * 20), 199.0), (100 - current_y_ * 20)};
@@ -425,11 +430,6 @@ public:
             angle_path = fitLineAndGetAngle(path);
             frame_counter = 0;
         }
-
-        RCLCPP_INFO(this->get_logger(), "%lf %lf", angle_path, (current_yaw_ * (180.0 / M_PI)));
-        // RCLCPP_INFO(this->get_logger(), "%lf", current_yaw_);
-        // RCLCPP_INFO(this->get_logger(), "after: %lf", current_yaw_);
-
 
 
         double x = angle_path - (current_yaw_ * (180.0 / M_PI));

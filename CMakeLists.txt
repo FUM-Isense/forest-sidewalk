@@ -20,7 +20,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(OpenCV REQUIRED)
-find_package(Open3D REQUIRED)
+# find_package(Open3D REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
 find_package(tf2 REQUIRED)
@@ -39,12 +39,12 @@ install(
 
 
 # Add the executable
-add_executable(cybathlon src/cybathlon.cc)
-add_executable(temp src/temp.cc)
+# add_executable(cybathlon src/cybathlon.cc)
+# add_executable(temp src/temp.cc)
 add_executable(occupancy src/temp3.cc)
 
-ament_target_dependencies(cybathlon rclcpp Eigen3 OpenCV Open3D cv_bridge nav_msgs)
-ament_target_dependencies(temp rclcpp Eigen3 OpenCV Open3D cv_bridge nav_msgs)
+# ament_target_dependencies(cybathlon rclcpp Eigen3 OpenCV Open3D cv_bridge nav_msgs)
+# ament_target_dependencies(temp rclcpp Eigen3 OpenCV Open3D cv_bridge nav_msgs)
 ament_target_dependencies(occupancy rclcpp Eigen3 OpenCV cv_bridge nav_msgs tf2 tf2_ros tf2_geometry_msgs pcl_conversions pcl_ros)
 # # Link libraries
 # target_include_directories(cybathlon PRIVATE
@@ -58,7 +58,9 @@ ament_target_dependencies(occupancy rclcpp Eigen3 OpenCV cv_bridge nav_msgs tf2 
 #   ${Open3D_LIBRARIES}
 # )
 
-install(TARGETS cybathlon temp occupancy
+# install(TARGETS cybathlon temp occupancy
+#   DESTINATION lib/${PROJECT_NAME})
+install(TARGETS occupancy
   DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)

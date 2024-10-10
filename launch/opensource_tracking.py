@@ -46,10 +46,6 @@ def generate_launch_description():
                 'use_mag': False,
                 'publish_tf': False,
                 'world_frame': 'enu',
-                'enable_gyro': 'true',
-                'gyro_fps': '200',  # Increase the frequency
-                'enable_accel': 'true',
-                'accel_fps': '200',  # Increase the frequency
             }],
             remappings=[
                 ('/imu/data_raw', '/camera/camera/imu')
@@ -93,7 +89,7 @@ def generate_launch_description():
                 'odom0_pose_rejection_threshold': 10000000.0,
                 'odom0_twist_rejection_threshold': 10000000.0,
                 'imu0': '/imu/data',
-                'imu0_config': [True, True, True, True, True, True, True, True, True, True, True, True, True, True, True],
+                'imu0_config': [False, False, False, True, True, True, True, True, True, True, True, True, True, True, True],
                 'imu0_differential': True,
                 'imu0_relative': False,
                 'use_control': False,

@@ -65,6 +65,7 @@
         "bit": "cpp",
         "core": "cpp",
         "dense": "cpp",
-        "*.ipp": "cpp"
+        "*.ipp": "cpp",
+        "numericaldiff": "cpp"
     }
 }

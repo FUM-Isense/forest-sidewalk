@@ -158,15 +158,16 @@ private:
 class PointCloudProcessor : public rclcpp::Node {
 public:
     PointCloudProcessor() : Node("pointcloud_processor"){
+        pointcloud_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("transformed_cloud", 10);
         // Subscribe to the pointcloud and odometry topics
-        pointcloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-            "/odom_last_frame", rclcpp::QoS(10).best_effort(),
-            std::bind(&PointCloudProcessor::pointCloudCallback, this, std::placeholders::_1)
-        );
-
         odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(
             "/odom", 10,
             std::bind(&PointCloudProcessor::odomCallback, this, std::placeholders::_1)
+        );
+
+        pointcloud_sub_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
+            "/odom_last_frame", rclcpp::QoS(10).best_effort(),
+            std::bind(&PointCloudProcessor::pointCloudCallback, this, std::placeholders::_1)
         );
 
         // Initialize parameters
@@ -180,8 +181,8 @@ public:
         global_occupancy_grid_ = cv::Mat::zeros(global_grid_rows_, global_grid_cols_, CV_8UC1);
 
         // Set the entire 81st column to 1
-        global_occupancy_grid_.col(64).setTo(1);
-        global_occupancy_grid_.col(136).setTo(1);
+        global_occupancy_grid_.col(70).setTo(1);
+        global_occupancy_grid_.col(130).setTo(1);
 
         x_origin_ = global_grid_rows_ / 2;
         y_origin_ = global_grid_cols_ / 2;
@@ -231,14 +232,14 @@ public:
         // Convert radians to degrees
         double angle_degrees = angle_radians * (180.0 / CV_PI);
 
-        // // Ensure the angle is positive and correct it to fit between 0 and 180 degrees
+        // Ensure the angle is positive and correct it to fit between 0 and 180 degrees
         // if (angle_degrees < 0) {
         //     angle_degrees = -angle_degrees;
         // } else {
         //     angle_degrees = 180.0 - angle_degrees;
         // }
 
-        return angle_degrees;
+        return angle_degrees + 90;
     }
 
     void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
@@ -255,6 +256,7 @@ public:
         pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
         pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients);
 
+        // Extract the plane normal from the coefficients
         seg.setOptimizeCoefficients(true);
         seg.setModelType(pcl::SACMODEL_PLANE);
         seg.setMethodType(pcl::SAC_RANSAC);
@@ -267,9 +269,65 @@ public:
             return;
         }
 
+        // // Extract the outliers (points not part of the ground plane)
+        // pcl::ExtractIndices<pcl::PointXYZ> extract;
+        // extract.setInputCloud(transformed_cloud);
+        // extract.setIndices(inliers);
+        // extract.setNegative(true);  // Keep the outliers (non-ground points)
+        // pcl::PointCloud<pcl::PointXYZ>::Ptr outlier_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        // extract.filter(*outlier_cloud);
+        
+        Eigen::Vector3f normal_vector(coefficients->values[0], coefficients->values[1], coefficients->values[2]);
+        Eigen::Vector3f target_normal(0.0, 0.0, 1.0);  // Normal of the XY plane (Z axis)
+
+        // Compute the rotation axis (cross product of the two normals)
+        Eigen::Vector3f rotation_axis = normal_vector.cross(target_normal);
+        float temp_angle = std::acos(normal_vector.dot(target_normal) / (normal_vector.norm() * target_normal.norm()));
+
+        rotation_axis.normalize();
+        tf2::Quaternion temp_quaternion;
+        temp_quaternion.setRotation(tf2::Vector3(rotation_axis.x(), rotation_axis.y(), rotation_axis.z()), temp_angle);
+
+        // Create the transform (rotation only, no translation)
+        tf2::Transform temp_transform;
+        temp_transform.setRotation(temp_quaternion);
+
+        // Apply the rotation to the point cloud
+        pcl::PointCloud<pcl::PointXYZ>::Ptr aligned_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl_ros::transformPointCloud(*transformed_cloud, *aligned_cloud, temp_transform);
+        
+
+
+
+
+
+
+
+        // Convert to ROS PointCloud2 message
+        sensor_msgs::msg::PointCloud2 output_cloud_msg;
+        pcl::toROSMsg(*aligned_cloud, output_cloud_msg);
+        output_cloud_msg.header.frame_id = "map";  // Set the frame
+        output_cloud_msg.header.stamp = this->get_clock()->now();  // Set the timestamp
+
+        // Publish the transformed cloud
+        pointcloud_pub_->publish(output_cloud_msg);
+
+
+
+
+
+
+
+
+
+
+
+
+
+        // Now you can use the rotated aligned_cloud to extract ground and outliers
         // Extract the outliers (points not part of the ground plane)
         pcl::ExtractIndices<pcl::PointXYZ> extract;
-        extract.setInputCloud(transformed_cloud);
+        extract.setInputCloud(aligned_cloud);
         extract.setIndices(inliers);
         extract.setNegative(true);  // Keep the outliers (non-ground points)
         pcl::PointCloud<pcl::PointXYZ>::Ptr outlier_cloud(new pcl::PointCloud<pcl::PointXYZ>);
@@ -389,12 +447,12 @@ public:
                 }
             }
         }
-        // // Visualize the global map with the path
-        // cv::Mat displayLocalGrid;
-        // point_count_grid.convertTo(displayLocalGrid, CV_8UC1, 255);  // Convert occupancy grid to 8-bit for display
+        // Visualize the global map with the path
+        cv::Mat displayLocalGrid;
+        point_count_grid.convertTo(displayLocalGrid, CV_8UC1, 255);  // Convert occupancy grid to 8-bit for display
 
-        // cv::imshow("Local Map", displayLocalGrid);  // Show the grid with path
-        // if (cv::waitKey(1) == 27) return;  // Exit on ESC key
+        cv::imshow("Local Map", displayLocalGrid);  // Show the grid with path
+        if (cv::waitKey(1) == 27) return;  // Exit on ESC key
 
         if (current_x_ * 20 >= 78){
             system("espeak \"Task Passed!\"");
@@ -431,8 +489,22 @@ public:
             frame_counter = 0;
         }
 
+        // if (angle_path < 0) {
+        //     angle_path = -angle_path;
+        // } else {
+        //     angle_path = 180.0 - angle_path;
+        // }
 
-        double x = angle_path - (current_yaw_ * (180.0 / M_PI));
+        double angle_pilot = current_yaw_ * (180.0 / M_PI) + 90;
+        // if (angle_pilot < 0) {
+        //     angle_pilot = -angle_pilot;
+        // } else {
+        //     angle_pilot = 180.0 - angle_pilot;
+        // }
+
+        RCLCPP_INFO(this->get_logger(), "%lf %lf", angle_path, angle_pilot);
+
+        double x = angle_path - angle_pilot;
         
         bool audio_feedback = true;  // Set this to true to enable audio feedback
         // int count = 0;               // Initialize the count variable
@@ -471,7 +543,7 @@ public:
         // Resize the grid from 200x200 to 800x800 for better visualization
         cv::Mat enlargedGrid;
         cv::resize(rgbGrid, enlargedGrid, cv::Size(800, 800), 0, 0, cv::INTER_NEAREST);  // Resize using nearest neighbor interpolation
-
+        
         // Display the enlarged RGB matrix with path visualization
         cv::imshow("Enlarged Confidence Matrix in RGB", enlargedGrid);
         if (cv::waitKey(1) == 27) return;  // Exit on ESC key
@@ -518,6 +590,7 @@ private:
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_sub_;
     rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
 
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pointcloud_pub_;
     // Variable to store the odometry transformation
     tf2::Transform odom_to_start_;
 

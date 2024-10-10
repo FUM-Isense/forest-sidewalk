@@ -3,3 +3,7 @@ src/temp2.cc
 config/nav.yaml
 .vscode
 src/testetsst.cc
+src/temp_btn.cc
+src/temp_occupancy.cc
+.vscode/settings.json
+src/temp_occupancy.cc

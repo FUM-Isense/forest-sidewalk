@@ -40,12 +40,14 @@ install(
 
 # Add the executable
 # add_executable(cybathlon src/cybathlon.cc)
-# add_executable(temp src/temp.cc)
-add_executable(occupancy src/temp3.cc)
+add_executable(sidewalk src/temp.cc)
+add_executable(forest src/temp2.cc)
+# add_executable(occupancy src/temp3.cc)
 
 # ament_target_dependencies(cybathlon rclcpp Eigen3 OpenCV Open3D cv_bridge nav_msgs)
-# ament_target_dependencies(temp rclcpp Eigen3 OpenCV Open3D cv_bridge nav_msgs)
-ament_target_dependencies(occupancy rclcpp Eigen3 OpenCV cv_bridge nav_msgs tf2 tf2_ros tf2_geometry_msgs pcl_conversions pcl_ros)
+# ament_target_dependencies(occupancy rclcpp Eigen3 OpenCV cv_bridge nav_msgs tf2 tf2_ros tf2_geometry_msgs pcl_conversions pcl_ros)
+ament_target_dependencies(sidewalk rclcpp Eigen3 OpenCV cv_bridge nav_msgs tf2 tf2_ros tf2_geometry_msgs pcl_conversions pcl_ros)
+ament_target_dependencies(forest rclcpp Eigen3 OpenCV cv_bridge nav_msgs tf2 tf2_ros tf2_geometry_msgs pcl_conversions pcl_ros)
 # # Link libraries
 # target_include_directories(cybathlon PRIVATE
 #   ${EIGEN3_INCLUDE_DIR}
@@ -60,7 +62,7 @@ ament_target_dependencies(occupancy rclcpp Eigen3 OpenCV cv_bridge nav_msgs tf2 
 
 # install(TARGETS cybathlon temp occupancy
 #   DESTINATION lib/${PROJECT_NAME})
-install(TARGETS occupancy
+install(TARGETS sidewalk forest
   DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)

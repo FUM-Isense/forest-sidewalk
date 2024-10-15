@@ -21,7 +21,7 @@ def generate_launch_description():
             package='tf2_ros',
             executable='static_transform_publisher',
             name='static_transform_publisher_camera1',
-            arguments=['0', '0', '-0.125', '0', '0', '0', 'base_link', 'camera1_link']
+            arguments=['0', '0', '-0.095', '0', '0', '0', 'base_link', 'camera1_link']
         ),
 
         # Static transform for the second camera
@@ -29,7 +29,7 @@ def generate_launch_description():
             package='tf2_ros',
             executable='static_transform_publisher',
             name='static_transform_publisher_camera2',
-            arguments=['0', '0', '0.125', '0', '0', '0', 'base_link', 'camera2_link']
+            arguments=['0.01', '0', '0.1', '0', '0', '0', 'base_link', 'camera2_link']
         ),
 
         # First camera - i
@@ -55,12 +55,13 @@ def generate_launch_description():
             }.items(),
         ),
 
+
         # Second camera - f
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(realsense_launch_file_dir),
             launch_arguments={
                 'camera_name': 'camera2',
-                'serial_no': '"233622072629"',
+                'serial_no': '"246422071801"',
                 'enable_sync': 'true',
                 'align_depth.enable': 'true',
                 'enable_color': 'true',
@@ -112,12 +113,14 @@ def generate_launch_description():
             remappings=[
                 ('rgbd_image0', '/camera1/rgbd_image'),
                 ('rgbd_image1', '/camera2/rgbd_image'),
+                ('imu', '/camera1/camera1/imu'),
             ],
             parameters=[
                 {'frame_id': 'base_link'},
                 {'subscribe_rgbd': True},
                 {'rgbd_cameras': 2},
-                {'approx_sync': True}
+                {'approx_sync': True},
+                {'wait_imu_to_init': True}
             ]
         ),
         #  # RGBD Odometry for the first camera
@@ -139,6 +142,7 @@ def generate_launch_description():
         #         {'odom_frame_id': 'odom1'}
         #     ]
         # ),
+
 
         # # RGBD Odometry for the second camera
         # Node(

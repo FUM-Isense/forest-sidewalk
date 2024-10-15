@@ -449,9 +449,9 @@ public:
         // Call A* planner
         AStarPlanner planner(global_occupancy_grid_);
         std::pair<int, int> start = {std::min((199 - current_x_ * 20), 199.0), (100 - current_y_ * 20)};
-        std::pair<int, int> goal = {100, 100}; // Example goal
+        std::pair<int, int> goal = {90, 100}; // Example goal
 
-        if ((current_x_ * 20 >= 78) || (std::sqrt(std::pow(start.first - goal.first, 2) + std::pow(start.second - goal.second, 2)) < 5.0)){
+        if ((current_x_ * 20 >= 82) || (std::sqrt(std::pow(start.first - goal.first, 2) + std::pow(start.second - goal.second, 2)) < 5.0)){
             system("espeak \"Task Passed!\"");
             exit(0);
         }
@@ -494,7 +494,7 @@ public:
         //     angle_pilot = 180.0 - angle_pilot;
         // }
 
-        // RCLCPP_INFO(this->get_logger(), "%lf %lf", angle_path, angle_pilot);
+        RCLCPP_INFO(this->get_logger(), "%lf %lf", angle_path, angle_pilot);
 
         double x = angle_path - angle_pilot;
         
@@ -505,7 +505,7 @@ public:
             if (state != 'r') {
                 RCLCPP_INFO(this->get_logger(), "Right");
                 if (audio_feedback) {
-                    system("espeak \"right\"");
+                    system("espeak \"       right\"");
                 }
                 state = 'r';
             }
@@ -513,7 +513,7 @@ public:
             if (state != 'l') {
                 RCLCPP_INFO(this->get_logger(), "Left");
                 if (audio_feedback) {
-                    system("espeak \"left\"");
+                    system("espeak \"       left\"");
                 }
                 state = 'l';
             }
@@ -522,7 +522,7 @@ public:
                 if (std::abs(x) < 10.0){
                     RCLCPP_INFO(this->get_logger(), "Forward");
                     if (audio_feedback) {
-                        system("espeak \"Forward\"");
+                        system("espeak \"       Forward\"");
                     }
                     state = 'f';
                 }
@@ -540,7 +540,7 @@ public:
         cv::imshow("Enlarged Confidence Matrix in RGB", enlargedGrid);
         if (cv::waitKey(1) == 27) return;  // Exit on ESC key
         
-        // RCLCPP_INFO(this->get_logger(), "2: %ld ms", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time_).count());
+        RCLCPP_INFO(this->get_logger(), "%ld ms", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time_).count());
     }
 
 
@@ -604,7 +604,7 @@ private:
 
     char state = 'none';
 
-    double angle_path = 0;
+    double angle_path = 90;
 
     int frame_counter = 0;
 
